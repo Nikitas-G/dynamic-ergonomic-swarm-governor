@@ -1,0 +1,52 @@
+import pandas as pd
+import numpy as np
+
+all_trigger_dfs_seeded = []
+num_runs_seeded = 50
+
+print(f"Running the simulation {num_runs_seeded} times with different seeds and collecting trigger events...")
+
+for i in range(num_runs_seeded):
+    # Re-initialize the governor for each run with a unique seed
+    gov_run_seeded = RobustErgonomicGovernor(seed=i) # Using 'i' as the seed
+    time_run_seeded, states_run_seeded, control_run_seeded = gov_run_seeded.solve()
+
+    trigger_events_run_seeded = []
+    L_max_run_seeded = gov_run_seeded.L_max
+
+    for event_time in gov_run_seeded.events:
+        idx = np.searchsorted(time_run_seeded, event_time)
+        xi_at_trigger = states_run_seeded[idx, 0]
+        eta_at_trigger = states_run_seeded[idx, 1]
+
+        trigger_reason = []
+        if eta_at_trigger <= 0.05:
+            trigger_reason.append('eta <= 0.05')
+        if xi_at_trigger >= 0.9 * L_max_run_seeded:
+            trigger_reason.append(f'xi >= 0.9 * L_max ({0.9 * L_max_run_seeded:.2f})')
+
+        trigger_events_run_seeded.append({
+            'Run_ID': i + 1, # Add a run identifier
+            'Seed': i,
+            'Time (s)': event_time,
+            'Ergonomic Load (xi)': xi_at_trigger,
+            'Stability Buffer (eta)': eta_at_trigger,
+            'Trigger Reason': ', '.join(trigger_reason)
+        })
+
+    if trigger_events_run_seeded:
+        all_trigger_dfs_seeded.append(pd.DataFrame(trigger_events_run_seeded))
+
+if all_trigger_dfs_seeded:
+    # Concatenate all DataFrames into a single one
+    combined_trigger_df_seeded = pd.concat(all_trigger_dfs_seeded, ignore_index=True)
+    print("\nCombined AETM Trigger Moments and Conditions across all seeded runs:")
+    display(combined_trigger_df_seeded)
+
+    # Optional: Analyze the frequency of trigger reasons
+    print("\nTrigger Reason Counts (Seeded Runs):")
+    trigger_reason_counts_seeded = combined_trigger_df_seeded['Trigger Reason'].value_counts()
+    display(trigger_reason_counts_seeded)
+
+else:
+    print("No trigger events recorded across all seeded runs.")
