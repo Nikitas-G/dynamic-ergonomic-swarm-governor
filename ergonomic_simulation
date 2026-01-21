@@ -2,19 +2,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
-# =============================================================================
-# REFINED ACADEMIC EXPERIMENT: Stochastic Ergonomic Load & Adaptive Swarm Response
-# Logic: Non-linear Accumulation-Dissipation with Sensor Noise (Slade, Wang, Krstic)
-# =============================================================================
-
 class RobustErgonomicGovernor:
-    def __init__(self):
-        # Biomechanical Constraints (Krstic, 2021)
-        self.L_max = 100.0        # System Integrity Barrier
+    def __init__(self, seed=42):
+        np.random.seed(seed) # For reproducibility
+        # Biomechanical Constraints (Krstic, 2024)
+        self.L_max = 100.0        # System Integrity Barrier (% RULA Equivalent)
         self.recovery_max = 0.12  # Max physiological recovery rate
         self.noise_std = 0.35     # IMU Drift Standard Deviation (Filippeschi, 2017)
 
-        # Adaptive Triggering Parameters (Wang et al., 2022)
+        # Adaptive Triggering Parameters (Wang et al., 2023)
         self.sigma = 0.4          # Triggering sensitivity
         self.eta_init = 1.0       # Initial stability buffer
         self.xi_hat = 10.0        # Last transmitted state reference
@@ -24,16 +20,15 @@ class RobustErgonomicGovernor:
         self.u_current = 0.0      # Current Swarm Assistance Magnitude
 
     def get_intensity(self, t):
-        """Simulates time-varying work demand (I) with a Stress Phase."""
+        """Simulates time-varying work demand (I) with a Stress Phase (200-400s)."""
         if 200 <= t <= 400:
-            return 2.5 # Stress test phase (High Demand)
-        return 1.2     # Normal operation phase
+            return 2.5  # High-intensity stress test phase
+        return 1.2      # Baseline operation phase
 
     def system_dynamics(self, t, state):
         xi, eta = state
 
         # 1. Non-linear Ergonomic Load Dynamics
-        # The accumulation term is influenced by swarm intervention u
         I_t = self.get_intensity(t)
         accumulation = I_t / (1.0 + 3.0 * self.u_current)
 
@@ -42,13 +37,12 @@ class RobustErgonomicGovernor:
 
         # Stochastic component (Sensor Noise / Human micro-motions)
         d_noise = np.random.normal(0, self.noise_std)
-
         d_xi = accumulation - dissipation + d_noise
 
-        # 2. Girard Dynamic Triggering Variable (Girard, 2014)
+        # 2. Girard Dynamic Triggering Variable (Girard, 2015)
         error = np.abs(xi - self.xi_hat)
         threshold = self.sigma * np.abs(xi) + 0.1
-        # eta decreases when error > threshold
+        # Buffer eta decreases when error > threshold
         d_eta = -0.6 * eta + (threshold - error)
 
         return [d_xi, d_eta]
@@ -61,7 +55,6 @@ class RobustErgonomicGovernor:
         results_t, results_y, results_u = [], [], []
 
         while t_current < duration:
-            # Short-step integration to evaluate triggering condition
             t_end = min(t_current + 1.0, duration)
             sol = solve_ivp(self.system_dynamics, (t_current, t_end), y_current,
                             t_eval=np.linspace(t_current, t_end, 10), rtol=1e-5)
@@ -72,9 +65,14 @@ class RobustErgonomicGovernor:
             if eta_now <= 0.05 or xi_now >= 0.9 * self.L_max:
                 self.events.append(sol.t[-1])
                 self.xi_hat = xi_now
-                # MMFSA Optimization simulation:
-                # Swarm assistance increases proportional to detected load
-                self.u_current = 0.75 * (xi_now / self.L_max)
+                
+                # REFINED: MMFSA Niche Selection Simulation
+                # The swarm identifies 3 distinct supportive configurations (Niches)
+                possible_niches = np.array([0.4, 0.7, 0.9]) 
+                # Optimization: Choose niche that best counters the current load xi
+                target_ratio = min(xi_now / self.L_max, 0.9)
+                self.u_current = possible_niches[np.argmin(np.abs(possible_niches - target_ratio))]
+                
                 y_current = [xi_now, self.eta_init] # Reset eta buffer
             else:
                 y_current = [xi_now, eta_now]
@@ -86,39 +84,35 @@ class RobustErgonomicGovernor:
 
         return np.array(results_t), np.array(results_y), np.array(results_u)
 
-# =============================================================================
-# DATA VISUALIZATION
-# =============================================================================
-
 gov = RobustErgonomicGovernor()
 time, states, control = gov.solve()
 
-plt.figure(figsize=(14, 10))
+plt.figure(figsize=(12, 10))
 
 # Top: Ergonomic Load xi(t)
 plt.subplot(3, 1, 1)
-plt.plot(time, states[:, 0], color='blue', label='Ergonomic Load $\\xi(t)$')
-plt.axhline(y=gov.L_max, color='red', linestyle='--', label='Integrity Barrier $L_{max}$')
+plt.plot(time, states[:, 0], color='blue', label=r'Ergonomic Load ξ(t)')
+plt.axhline(y=gov.L_max, color='red', linestyle='--', label=r'Integrity Barrier Lmax')
 plt.fill_between(time, 90, 100, color='red', alpha=0.1, label='Critical Zone')
 plt.scatter(gov.events, [states[np.searchsorted(time, e), 0] for e in gov.events],
-            color='orange', s=25, label='AETM Triggers')
-plt.title('Dynamic Integrity Governance: Stress Test Scenario (200-400s)')
-plt.ylabel('Magnitude ($\\%$)')
+            color='orange', s=30, label='AETM Triggers (Niche Shift)')
+plt.title('Dynamic Integrity Governance: Stochastic Stress Test (200-400s)')
+plt.ylabel(r'Magnitude (\%)')
 plt.legend(loc='upper right')
 plt.grid(True, alpha=0.3)
 
 # Middle: Girard Variable eta(t)
 plt.subplot(3, 1, 2)
-plt.plot(time, states[:, 1], color='green', label='Stability Buffer $\\eta(t)$')
+plt.plot(time, states[:, 1], color='green', label=r'Stability Buffer η(t)')
 plt.axhline(y=0.05, color='orange', linestyle=':', label='Trigger Threshold')
 plt.ylabel('Buffer Level')
 plt.legend()
 plt.grid(True, alpha=0.3)
 
-# Bottom: Swarm Intervention Magnitude u(t)
+# Bottom: Swarm Intervention Magnitude u(t) (Niche States)
 plt.subplot(3, 1, 3)
-plt.step(time, control, color='purple', label='Swarm Assistance Magnitude $u(t)$')
-plt.ylabel('Assistance Level')
+plt.step(time, control, color='purple', where='post', label=r'Swarm Niche Assistance u(t)')
+plt.ylabel('Niche Assistance Level')
 plt.xlabel('Time (seconds)')
 plt.legend()
 plt.grid(True, alpha=0.3)
