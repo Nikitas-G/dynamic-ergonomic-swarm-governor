@@ -1,129 +1,66 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.integrate import solve_ivp
+from scipy.integrate import odeint
 
-class RobustErgonomicGovernor:
-    def __init__(self, seed=42):
-        np.random.seed(seed)
-        
-        # --- Biomechanical & System Parameters (Table 1) ---
-        self.L_max = 100.0        # Integrity Barrier (Krstic, 2024 [23])
-        self.recovery_rate = 0.12 # Dissipation constant D_rate [11]
-        self.noise_std = 0.35     # Sensor jitter (Filippeschi [10])
-        
-        # --- AETM & Girard Parameters (Wang [17], Girard [22]) ---
-        self.sigma_0 = 0.4        # Initial triggering coefficient
-        self.mu = 0.05            # Adaptation rate for sigma(t)
-        self.lam = 0.6            # Buffer decay rate (lambda)
-        self.theta = 0.8          # Triggering gain (theta)
-        
-        # --- State Tracking ---
-        self.eta_init = 1.0       # Initial stability buffer eta(0)
-        self.xi_hat = 10.0        # Transmitted state reference (xi_k)
-        self.u_current = 0.0      # Current Swarm Assistance (u)
-        self.events = []          # Triggering timestamps
+# --- CONFIGURATION & BIOMECHANICAL CONSTANTS ---
+PARAMS = {
+    'dt': 0.01,           # 100Hz sensing freq [cite: 57]
+    'total_time': 100,    # Seconds [cite: 298]
+    'L_max': 1.0,         # Integrity Barrier [cite: 68]
+    'sigma_0': 0.15,      # AETM baseline [cite: 150]
+    'mu': 2.5,            # Adaptation rate [cite: 93]
+    'lambda_g': 0.6,      # Girard decay [cite: 102]
+    'theta_g': 0.8,       # Trigger gain [cite: 103]
+    'kappa': 0.15,        # Accumulation coeff [cite: 74]
+    'd_max': 0.25         # Recovery constant [cite: 82]
+}
 
-    def get_intensity(self, t):
-        """Simulates varying work demand with a Peak Stress Phase (200-400s)."""
-        if 200 <= t <= 400:
-            return 2.5  # High-intensity demand
-        return 1.2      # Baseline demand
+# Physiological torque limits (Nm) from Winter (2009) [cite: 19, 301]
+TAU_LIMITS = np.array([50.0, 50.0, 40.0, 30.0, 20.0, 15.0, 10.0])
 
-    def system_dynamics(self, t, state):
-        xi, eta = state
-        
-        # 1. Non-linear Ergonomic Load Dynamics (Eq. 1)
-        I_t = self.get_intensity(t)
-        # Accumulation A(q,u,f)
-        accumulation = I_t / (1.0 + 3.0 * self.u_current) 
-        # Dissipation D(xi) - Concave recovery function
-        dissipation = self.recovery_rate * xi * (1.0 - (xi / (1.1 * self.L_max)))
-        
-        # Stochastic disturbance d(t)
-        d_noise = np.random.normal(0, self.noise_std)
-        d_xi = accumulation - dissipation + d_noise
+def model_dynamics(xi, t, tau, p):
+    """ Implements the rectified ergonomic load ODE. """
+    # Accumulation A(t) [cite: 73]
+    acc = p['kappa'] * np.sqrt(np.sum((tau / TAU_LIMITS)**2))
+    # Rectified Dissipation D(xi) [cite: 80]
+    recovery_flux = (1 - (xi / (1.1 * p['L_max'])))
+    diss = p['d_max'] * xi * max(0, recovery_flux)
+    return acc - diss
 
-        # 2. Adaptive Dynamic Triggering (Eq. 2, 3, 4)
-        error = np.abs(xi - self.xi_hat)
-        
-        # Adaptive Threshold sigma(t)
-        sigma_t = self.sigma_0 * np.exp(-self.mu * np.abs(xi))
-        alpha_xi = np.abs(xi) + 0.1 # Minimum sensitivity offset
-        
-        # Girard Buffer Dynamics (eta)
-        # d_eta = -lambda*eta + theta*(threshold - error)
-        d_eta = -self.lam * eta + self.theta * (sigma_t * alpha_xi - error)
-        
-        return [d_xi, d_eta]
+def run_single_maneuver():
+    t_axis = np.arange(0, PARAMS['total_time'], PARAMS['dt'])
+    xi, eta, xi_ref = 0.1, 1.0, 0.1 # [cite: 150, 343, 344]
+    
+    log = []
+    trigger_events = []
 
-    def solve(self, duration=600):
-        t_eval = np.linspace(0, duration, 1000)
-        t_current = 0
-        y_current = [10.0, self.eta_init] # [Initial Load, Initial Buffer]
+    for t in t_axis:
+        # Intensity profile: Stress phase [cite: 150, 351]
+        load_factor = 1.8 if 20 < t < 60 else 1.2
+        torque = load_factor * (np.sin(np.zeros(7)) + 1.2) + np.random.normal(0, 0.35, 7) # [cite: 322]
         
-        res_t, res_y, res_u = [], [], []
-
-        while t_current < duration:
-            t_end = min(t_current + 1.0, duration)
-            sol = solve_ivp(self.system_dynamics, (t_current, t_end), y_current, 
-                            t_eval=np.linspace(t_current, t_end, 10), rtol=1e-5)
+        # Integration step [cite: 76, 354]
+        res = odeint(model_dynamics, xi, [t, t+PARAMS['dt']], args=(torque, PARAMS))
+        xi = max(0, res[-1][0])
+        
+        # AETM & Girard Buffer Logic [cite: 89, 99]
+        error = abs(xi_ref - xi)
+        sigma_t = PARAMS['sigma_0'] * np.exp(-PARAMS['mu'] * xi) # [cite: 92]
+        d_eta = -PARAMS['lambda_g'] * eta + PARAMS['theta_g'] * (sigma_t - error) # [cite: 99]
+        eta += d_eta * PARAMS['dt']
+        
+        # Trigger Condition [cite: 106, 190]
+        if eta <= 0.05:
+            trigger_events.append({'Time': t, 'xi': xi, 'eta': eta, 'Reason': 'Buffer Depletion'})
+            xi_ref = xi
+            eta = 1.0 # Buffer reset [cite: 366]
             
-            xi_now, eta_now = sol.y[0, -1], sol.y[1, -1]
+        log.append([t, xi, eta, sigma_t])
 
-            # TRIGGERING CONDITION (eta <= 0)
-            if eta_now <= 0.05 or xi_now >= 0.95 * self.L_max:
-                self.events.append(sol.t[-1])
-                self.xi_hat = xi_now # Update transmitted state
-                
-                # MMFSA Niche Selection (Simulated)
-                # Selects from 7-DOF redundant postural configurations
-                possible_niches = np.array([0.4, 0.7, 0.9])
-                target = min(xi_now / self.L_max, 0.9)
-                self.u_current = possible_niches[np.argmin(np.abs(possible_niches - target))]
-                
-                y_current = [xi_now, self.eta_init] # Reset Buffer eta
-            else:
-                y_current = [xi_now, eta_now]
+    return pd.DataFrame(log, columns=['Time', 'xi', 'eta', 'sigma']), pd.DataFrame(trigger_events)
 
-            res_t.extend(sol.t)
-            res_y.extend(sol.y.T)
-            res_u.extend([self.u_current] * len(sol.t))
-            t_current = t_end
-
-        return np.array(res_t), np.array(res_y), np.array(res_u)
-
-# --- Execution and Visualization ---
-gov = RobustErgonomicGovernor()
-time, states, control = gov.solve()
-
-plt.figure(figsize=(12, 10))
-
-# Top Plot: Ergonomic Load
-plt.subplot(3, 1, 1)
-plt.plot(time, states[:, 0], color='blue', label=r'Ergonomic Load $\xi(t)$')
-plt.axhline(y=gov.L_max, color='red', linestyle='--', label='Integrity Barrier $L_{max}$')
-plt.scatter(gov.events, [states[np.searchsorted(time, e), 0] for e in gov.events], 
-            color='orange', s=30, zorder=5, label='AETM Trigger (MMFSA Shift)')
-plt.ylabel('Magnitude (%)')
-plt.title('DIG Framework: Stochastic Stress Test ($N=1000$ run simulation)')
-plt.legend(loc='upper right')
-plt.grid(True, alpha=0.3)
-
-# Middle Plot: Girard Buffer
-plt.subplot(3, 1, 2)
-plt.plot(time, states[:, 1], color='green', label=r'Stability Buffer $\eta(t)$')
-plt.axhline(y=0.05, color='orange', linestyle=':', label='Triggering Threshold')
-plt.ylabel('Buffer Level')
-plt.legend()
-plt.grid(True, alpha=0.3)
-
-# Bottom Plot: Swarm Assistance
-plt.subplot(3, 1, 3)
-plt.step(time, control, color='purple', where='post', label='Swarm Assistance $u(t)$')
-plt.ylabel('Assistance Level')
-plt.xlabel('Time (seconds)')
-plt.legend()
-plt.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    df, triggers = run_single_maneuver()
+    print("--- Sample Trigger Log (Table B2) ---")
+    print(triggers.head())
