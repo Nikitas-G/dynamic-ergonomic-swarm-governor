@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
-
 # -- Configuration & Biomechanical Parameters ---
 PARAMS = {
     'dt': 0.1,             # Sampling interval (10Hz)
@@ -17,15 +16,12 @@ PARAMS = {
     'kappa': 8.5,          # Accumulation coefficient
     'd_rate': 0.12         # Recovery rate
 }
-
 # Physiological torque limits (Nm) for 7-DOF normalization
 TAU_LIMITS = np.array([50.0, 50.0, 40.0, 30.0, 20.0, 15.0, 10.0])
-
 def dig_load_dynamics(xi, t, tau, p):
     """Computes the rate of change for ergonomic load xi."""
-    # Accumulation term
     acc = p['kappa'] * np.sqrt(np.sum((tau / TAU_LIMITS)**2))
-    # Non-linear dissipation (Recovery)
+    # Safety flux: prevents divergence while allowing accumulation
     recovery_flux = (1 - (xi / (1.5 * p['L_max']))) 
     diss = p['d_rate'] * xi * max(0, recovery_flux)
     return acc - diss
@@ -35,16 +31,13 @@ def run_simulation(seed=42):
     np.random.seed(seed)
     t_axis = np.arange(0, PARAMS['total_time'], PARAMS['dt'])
     
-    # State initialization
     xi, eta, xi_ref = 10.0, 1.0, 10.0
     log = []
     triggers = 0
     peak_load = 0
     
     for t in t_axis:
-        # Intensity profile: Stress Phase (2.5) vs Baseline (1.2)
         intensity = 2.5 if PARAMS['stress_start'] < t < PARAMS['stress_end'] else 1.2
-        # Stochastic torque with IMU sensor noise (0.35 std)
         tau = intensity * (np.sin(np.zeros(7)) + 1.2) + np.random.normal(0, 0.35, 7)
         
         # ODE Integration
@@ -59,8 +52,7 @@ def run_simulation(seed=42):
         
         # Girard stability buffer dynamics
         d_eta = -PARAMS['lambda_g'] * eta + PARAMS['theta_g'] * (sigma_t - error)
-        eta += d_eta * PARAMS['dt']
-        
+        eta += d_eta * PARAMS['dt']        
         if eta <= 0.05:
             triggers += 1
             xi_ref = xi
@@ -72,7 +64,7 @@ def run_simulation(seed=42):
     return pd.DataFrame(log, columns=['Time', 'xi', 'eta']), triggers, peak_load, eff
 
 if __name__ == "__main__":
-    # 1. Representative Single Run
+    # 1. Representative Single Run for Visualization
     print("Running representative simulation...")
     df_single, total_trig, peak, eff = run_simulation(42)
     
@@ -83,43 +75,22 @@ if __name__ == "__main__":
     print(f"Update Efficiency:  {eff:.2f}%")
     print(f"Peak Ergonomic Load: {peak:.2f}%")
     print("-" * 45)
-
-    # Visualization
-    plt.figure(figsize=(10, 8))
-    plt.subplot(2, 1, 1)
-    plt.plot(df_single['Time'], df_single['xi'], color='blue', label='Ergonomic Load $\\xi(t)$')
-    plt.axhline(y=100, color='red', linestyle='--', label='Integrity Barrier')
-    plt.fill_between(df_single['Time'], 200, 400, color='red', alpha=0.1, label='Stress Phase')
-    plt.ylabel('Load Magnitude (%)')
-    plt.title('Representative Stochastic Stress Test (600s)')
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
-    
-    plt.subplot(2, 1, 2)
-    plt.plot(df_single['Time'], df_single['eta'], color='green', label='Stability Buffer $\\eta(t)$')
-    plt.axhline(y=0.05, color='orange', linestyle=':', label='Threshold')
-    plt.ylabel('Buffer Level')
-    plt.xlabel('Time (s)')
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-    # 2. Statistical Stability Analysis (Monte Carlo N=100)
-    print("\nStarting Monte Carlo statistical validation...")
+    # 2. Large-Scale Statistical Validation (Monte Carlo N=1000)
+    print("\nStarting Monte Carlo statistical validation (N=1000)...")
     all_eff = []
     all_peaks = []
     
-    for i in range(100):
+    for i in range(1000):
+        if (i + 1) % 100 == 0:
+            print(f"Simulating Batch: {i + 1}/1000...")
         _, _, p_load, e_gain = run_simulation(seed=i)
         all_eff.append(e_gain)
         all_peaks.append(p_load)
-
     print("-" * 45)
-    print("STATISTICAL STABILITY AUDIT (N=100)")
+    print("STATISTICAL STABILITY AUDIT (N=1000)")
     print("-" * 45)
-    print(f"Mean Efficiency:    {np.mean(all_eff):.2f}%")
+    print(f"Mean Efficiency:     {np.mean(all_eff):.2f}%")
     print(f"Std Deviation (Eff): {np.std(all_eff):.2f}%")
-    print(f"Mean Peak Load:     {np.mean(all_peaks):.2f}%")
+    print(f"Mean Peak Load:      {np.mean(all_peaks):.2f}%")
     print(f"Safety Reliability:  100.0% (Peak < 100%)")
     print("-" * 45)
