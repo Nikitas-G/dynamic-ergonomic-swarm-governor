@@ -1,7 +1,6 @@
 # dynamic-ergonomic-swarm-governor
-Python implementation for the Dynamic Integrity Governor in Human-Swarm Interaction
-Requirements
-Python 3.xNumPy, 
-SciPy, Matplotlib
-UsageRun ergonomic_simulation to generate the load trajectories (ξ(t)) and stability buffer (η(t)) visualizations.
+Overview: A framework to reduce communication overhead between human operators and robotic swarms by ~79% using event-triggered control.
 
+Core Components: Recursive Newton-Euler dynamics proxy, Girard stability buffer, and adaptive thresholds.
+
+Reproducibility: Instructions to run the Monte Carlo simulation (N=100) to verify the results reported in the manuscript.
